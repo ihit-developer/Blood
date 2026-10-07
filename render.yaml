@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: blood-donation-system
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node server.js
