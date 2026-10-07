@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const session = require("express-session");
+const path = require("path");
 const notificationRoutes = require("./routes/notificationRoutes");
 require("dotenv").config();
 
@@ -33,7 +34,8 @@ app.use(
   }),
 );
 
-app.use(express.static("public"));
+/* ================= STATIC FILES ================= */
+app.use(express.static(path.join(__dirname, "public")));
 
 app.use("/notifications", notificationRoutes);
 
@@ -49,6 +51,11 @@ app.use("/donors", donorRoutes);
 app.use("/requests", requestRoutes);
 
 app.use("/whatsapp", require("./routes/whatsappRoutes"));
+
+/* ================= HOME PAGE ================= */
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
 
 /* ================= DONOR PROFILE API ================= */
 app.get("/donor/me", async (req, res) => {
