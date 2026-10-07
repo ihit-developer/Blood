@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "../router";
 import { adminSession, getJSON, send, sendJSON } from "../api";
-import { BLOOD_GROUPS, CITIES, DONATION_GAP_DAYS, fmtGroup } from "../data";
+import { BLOOD_GROUPS, CITIES, DONATION_GAP_DAYS, fmtGroup, groupFamily } from "../data";
 import { CONTACT_PATTERN, formatDate } from "../utils";
 import { Alert, Button, EmptyState, Field, GroupChip, GroupPicker, StatusBadge, TableSkeleton } from "../components/ui";
 import Modal from "../components/Modal";
@@ -209,12 +209,31 @@ function EditDonorModal({ donor, busy, onSave, onClose }) {
 
 /* ---------- dashboard helpers ---------- */
 
-const PAGE_SIZE = 8;
+const PAGE_SIZE = 10;
 const TABS = [
   { id: "overview", label: "Overview", icon: "dash", title: "Overview", hint: "Live numbers, demand against supply, and what needs a decision." },
   { id: "requests", label: "Requests", icon: "inbox", title: "Blood requests", hint: "Search, filter, review and decide. Emergencies come first." },
   { id: "donors", label: "Donors", icon: "users", title: "Donors", hint: "Find donors by group, city or availability." },
 ];
+
+const initials = (name = "") =>
+  name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("") || "?";
+
+function Delta({ now, prev, inverse }) {
+  const title = "Compared with the previous 7 days";
+  if (prev === 0 && now === 0) return <span className="delta" title={title}>No change</span>;
+  if (prev === 0) return <span className="delta" title={title}><Icon name="up" size={12} />New</span>;
+  const pct = Math.round(((now - prev) / prev) * 100);
+  if (pct === 0) return <span className="delta" title={title}>Flat</span>;
+  const up = pct > 0;
+  const good = inverse ? !up : up;
+  return (
+    <span className={`delta ${good ? "good" : "bad"}`} title={title}>
+      <Icon name={up ? "up" : "down"} size={12} />
+      {Math.abs(pct)}%
+    </span>
+  );
+}
 
 const dayKey = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 
@@ -223,7 +242,7 @@ function lastDays(requests, n) {
   for (let i = n - 1; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    days.push({ key: dayKey(d), label: d.toLocaleDateString(undefined, { day: "numeric", month: "short" }), pending: 0, approved: 0, rejected: 0 });
+    days.push({ key: dayKey(d), day: d.getDate(), label: d.toLocaleDateString(undefined, { day: "numeric", month: "short" }), pending: 0, approved: 0, rejected: 0 });
   }
   const map = Object.fromEntries(days.map((d) => [d.key, d]));
   requests.forEach((r) => {
@@ -322,6 +341,7 @@ function Dashboard() {
 
   const [tab, setTab] = useState("overview");
   const [collapsed, setCollapsed] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const [donors, setDonors] = useState(null);
   const [requests, setRequests] = useState(null);
   const [loadError, setLoadError] = useState("");
@@ -371,6 +391,7 @@ function Dashboard() {
         e.preventDefault();
         setPalette(true);
       }
+      if (e.key === "Escape") setNavOpen(false);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -464,7 +485,7 @@ function Dashboard() {
   };
 
   const COPY = {
-    approve: { verb: "Approve", tone: "primary", done: "Request approved." },
+    approve: { verb: "Approve", tone: "ok", done: "Request approved." },
     reject: { verb: "Reject", tone: "danger", done: "Request rejected." },
     delete: { verb: "Delete", tone: "danger", done: "Request deleted." },
   };
@@ -539,6 +560,7 @@ function Dashboard() {
     if (nextTab === "requests") setRq((s) => ({ ...s, q: "", status: "All", emergency: false, ...patch }));
     if (nextTab === "donors") setDq((s) => ({ ...s, q: "", group: "All", city: "", ready: false, ...patch }));
     setTab(nextTab);
+    setNavOpen(false);
     setPalette(false);
     setPaletteQ("");
   };
@@ -599,28 +621,61 @@ function Dashboard() {
       return next;
     });
 
+  const week = (key) => ({
+    now: days14.slice(7).reduce((sum, d) => sum + d[key], 0),
+    prev: days14.slice(0, 7).reduce((sum, d) => sum + d[key], 0),
+  });
+  const wTotal = week("total");
+  const wPending = week("pending");
+  const wApproved = week("approved");
+  const wRejected = week("rejected");
+  const emergencyPending = all.filter((r) => isPending(r) && r.emergency).length;
+  const decided = counts.Approved + counts.Rejected;
+  const approvalRate = decided ? Math.round((counts.Approved / decided) * 100) : 0;
+  const restingCount = donors && eligibleCount !== undefined ? donors.length - eligibleCount : 0;
+  const cityStats = useMemo(() => {
+    const m = {};
+    (donors || []).forEach((d) => {
+      if (!d.city) return;
+      m[d.city] = m[d.city] || { city: d.city, total: 0, ready: 0 };
+      m[d.city].total += 1;
+      if (eligibility(d).ok) m[d.city].ready += 1;
+    });
+    return Object.values(m).sort((a, b) => b.total - a.total);
+  }, [donors]);
+  const topCities = cityStats.slice(0, 5);
+  const latest = useMemo(() => [...all].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).slice(0, 5), [all]);
+  const exportRequests = (rows) =>
+    downloadCSV(rows.map((r) => ({ patient: r.patientName, age: r.age, group: r.bloodGroup, city: r.city, contact: r.contact, email: r.email, emergency: r.emergency ? "yes" : "no", status: statusOf(r), requested: r.createdAt })), "requests.csv");
+
   const kpis = [
-    { label: "Donors", value: donors?.length, icon: "users", tone: "red", note: eligibleCount === undefined ? "" : `${eligibleCount} eligible now`, go: () => jump("donors") },
-    { label: "Requests", value: loading ? undefined : counts.total, icon: "inbox", tone: "dark", note: "Last 7 days", spark: days7.map((d) => d.total), go: () => jump("requests") },
-    { label: "Pending", value: loading ? undefined : counts.Pending, icon: "clock", tone: "amber", note: "Waiting for you", spark: days7.map((d) => d.pending), go: () => jump("requests", { status: "Pending" }) },
-    { label: "Approved", value: loading ? undefined : counts.Approved, icon: "check", tone: "green", note: "Last 7 days", spark: days7.map((d) => d.approved), go: () => jump("requests", { status: "Approved" }) },
-    { label: "Rejected", value: loading ? undefined : counts.Rejected, icon: "x", tone: "red", note: "Last 7 days", spark: days7.map((d) => d.rejected), go: () => jump("requests", { status: "Rejected" }) },
+    { label: "Donors", value: donors?.length, icon: "users", tone: "red", note: eligibleCount === undefined ? "" : `${eligibleCount} eligible now`, meter: donors?.length ? (eligibleCount / donors.length) * 100 : 0, go: () => jump("donors") },
+    { label: "Requests", value: loading ? undefined : counts.total, icon: "inbox", tone: "dark", note: `${wTotal.now} in the last 7 days`, delta: wTotal, spark: days7.map((d) => d.total), go: () => jump("requests") },
+    { label: "Pending", value: loading ? undefined : counts.Pending, icon: "clock", tone: "amber", note: emergencyPending ? `${emergencyPending} marked emergency` : "Waiting for a decision", delta: wPending, inverse: true, spark: days7.map((d) => d.pending), go: () => jump("requests", { status: "Pending" }) },
+    { label: "Approved", value: loading ? undefined : counts.Approved, icon: "check", tone: "green", note: `${wApproved.now} in the last 7 days`, delta: wApproved, spark: days7.map((d) => d.approved), go: () => jump("requests", { status: "Approved" }) },
+    { label: "Rejected", value: loading ? undefined : counts.Rejected, icon: "x", tone: "red", note: `${wRejected.now} in the last 7 days`, delta: wRejected, inverse: true, spark: days7.map((d) => d.rejected), go: () => jump("requests", { status: "Rejected" }) },
   ];
+
+  const selectTab = (id) => {
+    setTab(id);
+    setNavOpen(false);
+  };
 
   return (
     <>
-      <div className={`admin-shell${collapsed ? " is-collapsed" : ""}`}>
-        <aside className="side">
+      <div className={`admin-shell${collapsed ? " is-collapsed" : ""}${navOpen ? " nav-open" : ""}`}>
+        <aside className="side" aria-label="Admin navigation">
           <div className="side-brand">
-            <BrandMark size={32} light />
+            <BrandMark size={34} light />
             <div className="side-text">
               <strong>Blood Donation</strong>
               <span>Admin console</span>
             </div>
           </div>
+          <p className="side-label">Manage</p>
           <nav className="side-nav" role="tablist" aria-label="Admin sections">
             {TABS.map((t) => (
-              <button key={t.id} role="tab" aria-selected={tab === t.id} title={t.label} className={`side-link${tab === t.id ? " on" : ""}`} onClick={() => setTab(t.id)}>
+              <button key={t.id} role="tab" aria-selected={tab === t.id} title={t.label} className={`side-link${tab === t.id ? " on" : ""}`} onClick={() => selectTab(t.id)}>
                 <Icon name={t.icon} size={20} />
                 <span className="side-text">{t.label}</span>
                 {t.id === "requests" && counts.Pending > 0 && <span className="tab-count">{counts.Pending}</span>}
@@ -628,26 +683,41 @@ function Dashboard() {
             ))}
           </nav>
           <div className="side-foot">
+            <div className="side-user">
+              <span className="avatar">A</span>
+              <div>
+                <strong>Administrator</strong>
+                <span>Signed in</span>
+              </div>
+            </div>
             <a className="side-link" href="#/" title="View website">
-              <Icon name="arrow" size={20} />
+              <Icon name="home" size={20} />
               <span className="side-text">View website</span>
             </a>
             <button className="side-link" onClick={signOut} title="Sign out">
               <Icon name="logout" size={20} />
               <span className="side-text">Sign out</span>
             </button>
-            <button className="side-link side-collapse" onClick={() => setCollapsed((c) => !c)} aria-label="Collapse sidebar" title="Collapse sidebar">
+            <button className="side-link side-collapse" onClick={() => setCollapsed((c) => !c)} aria-label="Collapse sidebar" aria-pressed={collapsed} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
               <Icon name="sidebar" size={20} />
-              <span className="side-text">Collapse</span>
+              <span className="side-text">{collapsed ? "Expand" : "Collapse"}</span>
             </button>
           </div>
         </aside>
+        <div className="side-scrim" onClick={() => setNavOpen(false)} aria-hidden="true" />
 
         <div className="admin-main">
           <div className="admin-top">
+            <button className="icon-btn bordered top-menu" onClick={() => setNavOpen(true)} aria-label="Open menu">
+              <Icon name="menu" size={20} />
+            </button>
             <div className="admin-title">
+              <div className="crumbs" aria-hidden="true">
+                <span>Admin</span>
+                <Icon name="right" size={12} />
+                <span>{meta.label}</span>
+              </div>
               <h1>{meta.title}</h1>
-              <p>{meta.hint}</p>
             </div>
             <button className="searchbox" onClick={() => setPalette(true)} aria-label="Quick search">
               <Icon name="search" size={18} />
@@ -658,7 +728,7 @@ function Dashboard() {
               <span className="live" title={updatedAt ? `Updated ${ago}s ago` : ""}>
                 <i /> Live{ago !== null && <small>{ago < 5 ? "just now" : `${ago}s ago`}</small>}
               </span>
-              <button className={`icon-btn bordered${refreshing ? " spinning" : ""}`} onClick={() => load(true)} aria-label="Refresh data">
+              <button className={`icon-btn bordered${refreshing ? " spinning" : ""}`} onClick={() => load(true)} aria-label="Refresh data" title="Refresh data">
                 <Icon name="refresh" size={19} />
               </button>
               <NotificationBell />
@@ -670,7 +740,7 @@ function Dashboard() {
 
             {tab === "overview" && (
               <>
-                <section className="welcome">
+                <section className="page-intro">
                   <div>
                     <p className="welcome-date">{new Date(now).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })}</p>
                     <h2>{greeting}, admin.</h2>
@@ -683,27 +753,49 @@ function Dashboard() {
                     </p>
                   </div>
                   <div className="welcome-actions">
-                    <button className="btn btn-light btn-lg" onClick={() => jump("requests", { status: "Pending" })}>
-                      Review pending
-                    </button>
-                    <button className="btn btn-outline-light btn-lg" onClick={() => downloadCSV(all.map((r) => ({ patient: r.patientName, age: r.age, group: r.bloodGroup, city: r.city, contact: r.contact, email: r.email, emergency: r.emergency ? "yes" : "no", status: statusOf(r), requested: r.createdAt })), "requests.csv")}>
+                    <button className="btn btn-ghost" onClick={() => exportRequests(all)} disabled={!all.length}>
                       <Icon name="download" size={18} />
                       Export requests
+                    </button>
+                    <button className="btn btn-primary" onClick={() => jump("requests", { status: "Pending" })}>
+                      <Icon name="inbox" size={18} />
+                      Review pending
                     </button>
                   </div>
                 </section>
 
+                {emergencyPending > 0 && (
+                  <div className="emergency-banner" role="alert">
+                    <Icon name="alert" size={24} />
+                    <p>
+                      {emergencyPending} emergency {emergencyPending === 1 ? "request needs" : "requests need"} a decision now
+                      <span>Emergency requests are listed first in the queue.</span>
+                    </p>
+                    <button className="btn btn-danger btn-sm" onClick={() => jump("requests", { status: "Pending", emergency: true })}>
+                      Review emergencies
+                    </button>
+                  </div>
+                )}
+
                 <section className="kpi-grid" aria-label="Key numbers">
                   {kpis.map((k) => (
                     <button key={k.label} className="kpi" onClick={k.go}>
-                      <span className={`stat-icon tone-${k.tone}`}>
-                        <Icon name={k.icon} size={22} />
+                      <span className="kpi-top">
+                        <span className={`stat-icon tone-${k.tone}`}>
+                          <Icon name={k.icon} size={20} />
+                        </span>
+                        {!loading && k.delta && <Delta now={k.delta.now} prev={k.delta.prev} inverse={k.inverse} />}
                       </span>
                       <span className="stat-value">
                         <CountUp value={k.value} />
                       </span>
                       <span className="stat-label">{k.label}</span>
                       <span className="kpi-note">{k.note}</span>
+                      {k.meter !== undefined && (
+                        <span className="kpi-meter" aria-hidden="true">
+                          <span style={{ width: `${k.meter}%` }} />
+                        </span>
+                      )}
                       {k.spark && <Sparkline values={k.spark} />}
                     </button>
                   ))}
@@ -737,7 +829,7 @@ function Dashboard() {
                                 <span style={{ flex: d.pending, background: "var(--plasma)" }} />
                               </div>
                             </div>
-                            <span className="bar-label">{d.label.split(" ")[0]}</span>
+                            <span className="bar-label">{d.day}</span>
                           </div>
                         ))}
                       </div>
@@ -745,13 +837,14 @@ function Dashboard() {
                   </section>
 
                   <section className="panel">
-                    <h2 className="panel-title">Request status</h2>
+                    <h2 className="panel-title" style={{ marginBottom: 18 }}>Request status</h2>
                     {loading ? (
                       <TableSkeleton rows={2} />
                     ) : (
                       <div className="donut-wrap">
                         <DonutChart
                           active={hot}
+                          size={168}
                           centerValue={counts.total}
                           centerLabel={counts.total === 1 ? "request" : "requests"}
                           segments={[
@@ -770,44 +863,16 @@ function Dashboard() {
                             </li>
                           ))}
                         </ul>
+                        <p className="rate">
+                          <span>Approval rate of decided requests</span>
+                          <b>{decided ? `${approvalRate}%` : "-"}</b>
+                        </p>
                       </div>
                     )}
                   </section>
                 </div>
 
-                <div className="grid-2 wide-left">
-                  <section className="panel">
-                    <div className="panel-head">
-                      <h2 className="panel-title">Supply and demand by blood group</h2>
-                      <ul className="legend inline">
-                        <li><i style={{ background: "var(--blood)" }} />Eligible donors</li>
-                        <li><i style={{ background: "var(--plasma)" }} />Pending requests</li>
-                      </ul>
-                    </div>
-                    {loading ? (
-                      <TableSkeleton rows={4} />
-                    ) : (
-                      <ul className="supply">
-                        {supply.map((s) => (
-                          <li key={s.group}>
-                            <button onClick={() => jump("donors", { group: s.group, ready: true })} title={`Show eligible ${fmtGroup(s.group)} donors`}>
-                              <GroupChip group={s.group} />
-                              <span className="supply-bars">
-                                <span className="sb sb-supply" style={{ width: `${(s.donors / maxSupply) * 100}%` }} />
-                                <span className="sb sb-demand" style={{ width: `${(s.demand / maxSupply) * 100}%` }} />
-                              </span>
-                              <span className="supply-nums">
-                                {s.donors} / {s.demand}
-                              </span>
-                              {s.demand > s.donors ? <span className="badge badge-rejected">Shortage</span> : s.demand > 0 ? <span className="badge badge-approved">Covered</span> : <span className="badge badge-none">No demand</span>}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <p className="hint">Matches the same blood group only. Click a row to see those donors.</p>
-                  </section>
-
+                <div className="grid-2">
                   <section className="panel">
                     <div className="panel-head">
                       <h2 className="panel-title">Needs a decision</h2>
@@ -832,6 +897,110 @@ function Dashboard() {
                       </ul>
                     )}
                   </section>
+
+                  <section className="panel">
+                    <div className="panel-head">
+                      <h2 className="panel-title">Supply and demand</h2>
+                      <ul className="legend inline">
+                        <li><i style={{ background: "var(--blood)" }} />Donors</li>
+                        <li><i style={{ background: "var(--plasma)" }} />Pending</li>
+                      </ul>
+                    </div>
+                    {loading ? (
+                      <TableSkeleton rows={4} />
+                    ) : (
+                      <ul className="supply">
+                        {supply.map((s) => (
+                          <li key={s.group}>
+                            <button onClick={() => jump("donors", { group: s.group, ready: true })} title={`Show eligible ${fmtGroup(s.group)} donors`}>
+                              <GroupChip group={s.group} />
+                              <span className="supply-bars">
+                                <span className="sb sb-supply" style={{ width: `${(s.donors / maxSupply) * 100}%` }} />
+                                <span className="sb sb-demand" style={{ width: `${(s.demand / maxSupply) * 100}%` }} />
+                              </span>
+                              <span className="supply-nums">
+                                {s.donors} / {s.demand}
+                              </span>
+                              {s.demand > s.donors ? <span className="badge badge-rejected">Shortage</span> : s.demand > 0 ? <span className="badge badge-approved">Covered</span> : <span className="badge badge-none">No demand</span>}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="hint">Eligible donors / pending requests, same blood group. Click a row to see those donors.</p>
+                  </section>
+                </div>
+
+                <div className="grid-2 even">
+                  <section className="panel">
+                    <div className="panel-head">
+                      <h2 className="panel-title">Donors by city</h2>
+                      <button className="link-btn" onClick={() => jump("donors")}>All donors</button>
+                    </div>
+                    {loading && <TableSkeleton rows={3} />}
+                    {!loading && topCities.length === 0 && <EmptyState icon="pin" title="No donors yet">Cities appear here once donors register.</EmptyState>}
+                    {topCities.length > 0 && (
+                      <ul className="plain-list">
+                        {topCities.map((c) => (
+                          <li key={c.city} className="mini-row">
+                            <button onClick={() => jump("donors", { city: c.city })}>{c.city}</button>
+                            <b>{c.total}</b>
+                            <span className="mini-bar" aria-hidden="true">
+                              <span style={{ width: `${(c.total / topCities[0].total) * 100}%` }} />
+                            </span>
+                            <small>{c.ready} eligible now</small>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+
+                  <section className="panel">
+                    <h2 className="panel-title" style={{ marginBottom: 18 }}>Donor availability</h2>
+                    {loading ? (
+                      <TableSkeleton rows={2} />
+                    ) : (
+                      <div className="donut-wrap">
+                        <DonutChart
+                          size={150}
+                          thickness={20}
+                          centerValue={eligibleCount ?? 0}
+                          centerLabel="eligible"
+                          segments={[
+                            { label: "Eligible", value: eligibleCount ?? 0, color: "var(--ok)" },
+                            { label: "Resting", value: restingCount, color: "var(--plasma)" },
+                          ]}
+                        />
+                        <ul className="legend">
+                          <li><i style={{ background: "var(--ok)" }} />Eligible to donate<b>{eligibleCount ?? 0}</b></li>
+                          <li><i style={{ background: "var(--plasma)" }} />Resting ({DONATION_GAP_DAYS}-day gap)<b>{restingCount}</b></li>
+                        </ul>
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="panel">
+                    <div className="panel-head">
+                      <h2 className="panel-title">Latest requests</h2>
+                      <button className="link-btn" onClick={() => jump("requests")}>All requests</button>
+                    </div>
+                    {loading && <TableSkeleton rows={3} />}
+                    {!loading && latest.length === 0 && <EmptyState title="No requests yet">New requests show up here.</EmptyState>}
+                    {latest.length > 0 && (
+                      <ul className="latest">
+                        {latest.map((r) => (
+                          <li key={r._id}>
+                            <GroupChip group={r.bloodGroup} />
+                            <div>
+                              <strong>{r.patientName}</strong>
+                              <small>{r.city}, {formatDate(r.createdAt)}</small>
+                            </div>
+                            <StatusBadge status={statusOf(r)} />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
                 </div>
               </>
             )}
@@ -841,7 +1010,7 @@ function Dashboard() {
                 <div className="toolbar">
                   <label className="search-in">
                     <Icon name="search" size={18} />
-                    <input className="input" placeholder="Search patient, contact, city, group" value={rq.q} onChange={(e) => setRq((s) => ({ ...s, q: e.target.value }))} aria-label="Search requests" />
+                    <input className="input" placeholder="Search patient, contact or city" value={rq.q} onChange={(e) => setRq((s) => ({ ...s, q: e.target.value }))} aria-label="Search requests" />
                   </label>
                   <div className="seg" role="group" aria-label="Filter requests">
                     {["All", "Pending", "Approved", "Rejected"].map((f) => (
@@ -854,6 +1023,10 @@ function Dashboard() {
                   <button className={`chip-toggle${rq.emergency ? " on" : ""}`} aria-pressed={rq.emergency} onClick={() => setRq((s) => ({ ...s, emergency: !s.emergency }))}>
                     <Icon name="alert" size={16} />
                     Emergency only
+                  </button>
+                  <button className="btn btn-sm btn-ghost" style={{ height: 40 }} disabled={!reqList.length} onClick={() => exportRequests(reqList)}>
+                    <Icon name="download" size={16} />
+                    Export
                   </button>
                 </div>
 
@@ -871,54 +1044,56 @@ function Dashboard() {
                 {!loading && reqList.length === 0 && <EmptyState title="No requests match">Try a different search or filter.</EmptyState>}
                 {!loading && reqList.length > 0 && (
                   <div className="table-wrap">
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th className="th-check"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAll} aria-label="Select all on this page" /></th>
-                          <th>Patient</th>
-                          <th>Blood group</th>
-                          <th>City</th>
-                          <th>Status</th>
-                          <th>Requested</th>
-                          <th className="th-actions">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {reqPg.slice.map((r) => (
-                          <Fragment key={r._id}>
-                            <tr className={`${r.emergency && isPending(r) ? "row-emergency" : ""}${selected.has(r._id) ? " row-selected" : ""}`}>
-                              <td className="th-check"><input type="checkbox" checked={selected.has(r._id)} onChange={() => toggleOne(r._id)} aria-label={`Select ${r.patientName}`} /></td>
-                              <td>
-                                <button className="cell-link" onClick={() => setExpanded(expanded === r._id ? null : r._id)} aria-expanded={expanded === r._id}>
-                                  <Icon name="chevron" size={16} className={expanded === r._id ? "flip" : ""} />
-                                  <strong>{r.patientName}</strong>
-                                </button>
-                                {r.emergency && <span className="badge badge-emergency">Emergency</span>}
-                                {r.source === "whatsapp" && <span className="badge badge-wa">WhatsApp</span>}
-                              </td>
-                              <td><GroupChip group={r.bloodGroup} /></td>
-                              <td>{r.city}</td>
-                              <td><StatusBadge status={statusOf(r)} /></td>
-                              <td>{formatDate(r.createdAt)}</td>
-                              <td>{requestActions(r)}</td>
-                            </tr>
-                            {expanded === r._id && (
-                              <tr className="row-detail">
-                                <td />
-                                <td colSpan={6}>
-                                  <dl>
-                                    <div><dt>Patient age</dt><dd>{r.age ?? "-"}</dd></div>
-                                    <div><dt>Contact</dt><dd>{r.contact}</dd></div>
-                                    <div><dt>Email</dt><dd>{r.email || "-"}</dd></div>
-                                    <div><dt>Matching eligible donors</dt><dd>{(donors || []).filter((d) => d.bloodGroup === r.bloodGroup && d.city === r.city && eligibility(d).ok).length} in {r.city}</dd></div>
-                                  </dl>
+                    <div className="table-scroll">
+                      <table className="table stack">
+                        <thead>
+                          <tr>
+                            <th className="th-check"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAll} aria-label="Select all on this page" /></th>
+                            <th>Patient</th>
+                            <th>Blood group</th>
+                            <th>City</th>
+                            <th>Status</th>
+                            <th>Requested</th>
+                            <th className="th-actions">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reqPg.slice.map((r) => (
+                            <Fragment key={r._id}>
+                              <tr className={`${r.emergency && isPending(r) ? "row-emergency" : ""}${selected.has(r._id) ? " row-selected" : ""}`}>
+                                <td className="th-check"><input type="checkbox" checked={selected.has(r._id)} onChange={() => toggleOne(r._id)} aria-label={`Select ${r.patientName}`} /></td>
+                                <td data-label="Patient">
+                                  <button className="cell-link" onClick={() => setExpanded(expanded === r._id ? null : r._id)} aria-expanded={expanded === r._id}>
+                                    <Icon name="chevron" size={16} className={expanded === r._id ? "flip" : ""} />
+                                    <strong>{r.patientName}</strong>
+                                  </button>
+                                  {r.emergency && <span className="badge badge-emergency">Emergency</span>}
+                                  {r.source === "whatsapp" && <span className="badge badge-wa">WhatsApp</span>}
                                 </td>
+                                <td data-label="Blood group"><GroupChip group={r.bloodGroup} /></td>
+                                <td data-label="City">{r.city}</td>
+                                <td data-label="Status"><StatusBadge status={statusOf(r)} /></td>
+                                <td data-label="Requested">{formatDate(r.createdAt)}</td>
+                                <td className="th-actions">{requestActions(r)}</td>
                               </tr>
-                            )}
-                          </Fragment>
-                        ))}
-                      </tbody>
-                    </table>
+                              {expanded === r._id && (
+                                <tr className="row-detail">
+                                  <td />
+                                  <td colSpan={6}>
+                                    <dl>
+                                      <div><dt>Patient age</dt><dd>{r.age ?? "-"}</dd></div>
+                                      <div><dt>Contact</dt><dd>{r.contact}</dd></div>
+                                      <div><dt>Email</dt><dd>{r.email || "-"}</dd></div>
+                                      <div><dt>Matching eligible donors</dt><dd>{(donors || []).filter((d) => d.bloodGroup === r.bloodGroup && d.city === r.city && eligibility(d).ok).length} in {r.city}</dd></div>
+                                    </dl>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                     <Pager pg={reqPg} />
                   </div>
                 )}
@@ -927,6 +1102,14 @@ function Dashboard() {
 
             {tab === "donors" && (
               <section>
+                {!loading && (
+                  <div className="mini-stats">
+                    <div className="mini-stat"><b>{donors.length}</b><span>Registered donors</span></div>
+                    <div className="mini-stat"><b>{eligibleCount}</b><span>Eligible now</span></div>
+                    <div className="mini-stat"><b>{restingCount}</b><span>Resting after a donation</span></div>
+                    <div className="mini-stat"><b>{cityStats.length}</b><span>Cities covered</span></div>
+                  </div>
+                )}
                 <div className="toolbar">
                   <label className="search-in">
                     <Icon name="search" size={18} />
@@ -946,7 +1129,7 @@ function Dashboard() {
                     <Icon name="check" size={16} />
                     Eligible now
                   </button>
-                  <button className="btn btn-sm btn-ghost" disabled={!donorList?.length} onClick={() => downloadCSV(donorList.map((d) => ({ name: d.name, age: d.age, group: d.bloodGroup, city: d.city, contact: d.contact, last_donation: d.lastDonationDate || "" })), "donors.csv")}>
+                  <button className="btn btn-sm btn-ghost" style={{ height: 40 }} disabled={!donorList?.length} onClick={() => downloadCSV(donorList.map((d) => ({ name: d.name, age: d.age, group: d.bloodGroup, city: d.city, contact: d.contact, last_donation: d.lastDonationDate || "" })), "donors.csv")}>
                     <Icon name="download" size={16} />
                     Export
                   </button>
@@ -964,48 +1147,57 @@ function Dashboard() {
                 {!loading && donorList.length === 0 && <EmptyState icon="users" title="No donors match">Try a different search or clear a filter.</EmptyState>}
                 {!loading && donorList.length > 0 && (
                   <div className="table-wrap">
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Age</th>
-                          <th>Blood group</th>
-                          <th>Contact</th>
-                          <th>City</th>
-                          <th>Availability</th>
-                          <th className="th-actions">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {donorPg.slice.map((d) => {
-                          const e = eligibility(d);
-                          return (
-                            <tr key={d._id}>
-                              <td><strong>{d.name}</strong></td>
-                              <td>{d.age}</td>
-                              <td><GroupChip group={d.bloodGroup} /></td>
-                              <td>{d.contact}</td>
-                              <td>{d.city}</td>
-                              <td>
-                                <span className={`badge ${e.ok ? "badge-approved" : "badge-pending"}`}>{e.label}</span>
-                                <small className="cell-sub">Last: {formatDate(d.lastDonationDate)}</small>
-                              </td>
-                              <td>
-                                <div className="row-actions">
-                                  <button className="btn btn-sm btn-ghost" onClick={() => setEditing(d)}>
-                                    <Icon name="edit" size={16} />
-                                    Edit
-                                  </button>
-                                  <button className="icon-btn" onClick={() => askDeleteDonor(d)} aria-label={`Delete donor ${d.name}`}>
-                                    <Icon name="trash" size={18} />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                    <div className="table-scroll">
+                      <table className="table stack">
+                        <thead>
+                          <tr>
+                            <th>Donor</th>
+                            <th>Blood group</th>
+                            <th>Age</th>
+                            <th>Contact</th>
+                            <th>City</th>
+                            <th>Availability</th>
+                            <th className="th-actions">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {donorPg.slice.map((d) => {
+                            const e = eligibility(d);
+                            return (
+                              <tr key={d._id}>
+                                <td data-label="Donor">
+                                  <div className={`person g-${groupFamily(d.bloodGroup)}`}>
+                                    <span className="avatar soft">{initials(d.name)}</span>
+                                    <strong>{d.name}</strong>
+                                  </div>
+                                </td>
+                                <td data-label="Blood group"><GroupChip group={d.bloodGroup} /></td>
+                                <td data-label="Age">{d.age}</td>
+                                <td data-label="Contact">{d.contact}</td>
+                                <td data-label="City">{d.city}</td>
+                                <td data-label="Availability">
+                                  <span>
+                                    <span className={`badge ${e.ok ? "badge-approved" : "badge-pending"}`}>{e.label}</span>
+                                    <small className="cell-sub">Last: {formatDate(d.lastDonationDate)}</small>
+                                  </span>
+                                </td>
+                                <td className="th-actions">
+                                  <div className="row-actions">
+                                    <button className="btn btn-sm btn-ghost" onClick={() => setEditing(d)}>
+                                      <Icon name="edit" size={16} />
+                                      Edit
+                                    </button>
+                                    <button className="icon-btn" onClick={() => askDeleteDonor(d)} aria-label={`Delete donor ${d.name}`}>
+                                      <Icon name="trash" size={18} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                     <Pager pg={donorPg} />
                   </div>
                 )}
@@ -1057,7 +1249,7 @@ function Dashboard() {
           footer={
             <>
               <Button className="btn-ghost" onClick={() => setConfirm(null)} disabled={busy}>Cancel</Button>
-              <Button className={confirm.tone === "danger" ? "btn-danger" : "btn-primary"} onClick={confirm.run} loading={busy}>{confirm.confirmLabel}</Button>
+              <Button className={confirm.tone === "danger" ? "btn-danger" : confirm.tone === "ok" ? "btn-ok" : "btn-primary"} onClick={confirm.run} loading={busy}>{confirm.confirmLabel}</Button>
             </>
           }
         >

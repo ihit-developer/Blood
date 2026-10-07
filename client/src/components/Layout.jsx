@@ -36,8 +36,8 @@ export function Navbar() {
     <header className="nav">
       <div className="container nav-inner">
         <Link to="/" className="brand" aria-label="Blood Donation System, home">
-          <BrandMark light />
-          <span>Blood Donation System</span>
+          <BrandMark size={32} />
+          <span>Blood Donation</span>
         </Link>
 
         <button
@@ -74,9 +74,6 @@ export function Navbar() {
             )}
           </div>
 
-          <NavLink to="/request-blood" className="nav-link">
-            Request blood
-          </NavLink>
           <NavLink to="/request-status" className="nav-link">
             Track request
           </NavLink>
@@ -84,8 +81,15 @@ export function Navbar() {
             History
           </NavLink>
 
-          <Link to={isAdmin ? "/admin" : "/admin-login"} className="btn btn-light btn-sm nav-admin">
+          <span className="nav-spacer" />
+
+          <Link to={isAdmin ? "/admin" : "/admin-login"} className="nav-link nav-admin">
+            <Icon name="shield" size={17} />
             {isAdmin ? "Dashboard" : "Admin"}
+          </Link>
+          <Link to="/request-blood" className="btn btn-primary">
+            <Icon name="drop" size={17} />
+            Request blood
           </Link>
         </nav>
       </div>
@@ -98,20 +102,35 @@ export function Footer() {
     <footer className="footer">
       <div className="container footer-inner">
         <div className="footer-brand">
-          <BrandMark size={28} light />
-          <div>
-            <strong>Blood Donation System</strong>
-            <p>Every request is reviewed by an admin before it is approved.</p>
-          </div>
+          <Link to="/" className="brand">
+            <BrandMark size={32} light />
+            <span>Blood Donation</span>
+          </Link>
+          <p>A single place to register as a donor, request blood and follow every request until an admin decides.</p>
         </div>
-        <nav className="footer-links" aria-label="Footer">
+        <nav className="footer-links" aria-label="Donors">
+          <h3>Donors</h3>
           <Link to="/register">Become a donor</Link>
+          <Link to="/login">Donor login</Link>
+          <Link to="/profile">My profile</Link>
+        </nav>
+        <nav className="footer-links" aria-label="Patients">
+          <h3>Patients</h3>
           <Link to="/request-blood">Request blood</Link>
           <Link to="/request-status">Track a request</Link>
+          <Link to="/request-history">Request history</Link>
+        </nav>
+        <nav className="footer-links" aria-label="Team">
+          <h3>Team</h3>
           <Link to="/admin-login">Admin sign-in</Link>
         </nav>
       </div>
-      <div className="container footer-note">&copy; 2026 Blood Donation System</div>
+      <div className="container">
+        <div className="footer-note">
+          <span>&copy; 2026 Blood Donation System</span>
+          <span>Every request is reviewed by an admin before it is approved.</span>
+        </div>
+      </div>
     </footer>
   );
 }

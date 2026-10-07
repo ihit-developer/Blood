@@ -8,7 +8,7 @@ export default function Modal({ title, onClose, children, footer, size = "m" }) 
 
   useEffect(() => {
     const previous = document.activeElement;
-    dialogRef.current?.focus();
+    if (dialogRef.current && !dialogRef.current.contains(document.activeElement)) dialogRef.current.focus();
     const onKey = (e) => {
       if (e.key === "Escape") closeRef.current();
     };

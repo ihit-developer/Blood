@@ -29,7 +29,7 @@ const routes = {
 function Pages() {
   const { path } = useLocation();
   const Page = routes[path] || NotFound;
-  if (path === "/admin") {
+  if (path === "/admin" || path === "/admin-login") {
     return (
       <main id="main" tabIndex={-1}>
         <Page />

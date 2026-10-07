@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "../router";
 import { adminSession, send } from "../api";
-import { Alert, Button, Field, PageHeader } from "../components/ui";
+import { Alert, Button, Field } from "../components/ui";
+import AuthLayout from "../components/AuthLayout";
+import { Icon } from "../icons";
 import { useToast } from "../components/Toast";
 
 export default function AdminLogin() {
@@ -10,6 +12,7 @@ export default function AdminLogin() {
   const [form, setForm] = useState({ username: "", password: "" });
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [show, setShow] = useState(false);
 
   const set = (key) => (e) => {
     setForm((f) => ({ ...f, [key]: e.target.value }));
@@ -41,35 +44,55 @@ export default function AdminLogin() {
   };
 
   return (
-    <>
-      <PageHeader title="Admin sign-in" description="For the team that reviews requests and manages donors." />
-      <div className="container page-body narrow">
-        <form className="panel form" onSubmit={onSubmit} noValidate>
-          {error && <Alert>{error}</Alert>}
-          <Field label="Username" htmlFor="username">
-            <input
-              id="username"
-              className="input"
-              value={form.username}
-              onChange={set("username")}
-              autoComplete="username"
-            />
-          </Field>
-          <Field label="Password" htmlFor="password">
+    <AuthLayout
+      standalone
+      title="Admin sign-in"
+      description="For the team that reviews requests and manages donors."
+      headline="Review requests. Keep donors ready."
+      text="One console for every blood request, every donor and the alerts that connect them."
+      points={[
+        ["inbox", "Approve or reject requests, emergencies first"],
+        ["users", "Keep the donor list accurate and up to date"],
+        ["pulse", "Live numbers on demand and supply"],
+      ]}
+    >
+      <form className="panel form" onSubmit={onSubmit} noValidate>
+        {error && <Alert>{error}</Alert>}
+        <Field label="Username" htmlFor="username">
+          <input
+            id="username"
+            className="input"
+            value={form.username}
+            onChange={set("username")}
+            autoComplete="username"
+            autoFocus
+          />
+        </Field>
+        <Field label="Password" htmlFor="password">
+          <div className="input-wrap">
             <input
               id="password"
               className="input"
-              type="password"
+              type={show ? "text" : "password"}
               value={form.password}
               onChange={set("password")}
               autoComplete="current-password"
             />
-          </Field>
-          <Button type="submit" loading={submitting} className="btn-primary btn-block btn-lg">
-            Sign in
-          </Button>
-        </form>
-      </div>
-    </>
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => setShow((v) => !v)}
+              aria-label={show ? "Hide password" : "Show password"}
+              aria-pressed={show}
+            >
+              <Icon name={show ? "eyeOff" : "eye"} size={18} />
+            </button>
+          </div>
+        </Field>
+        <Button type="submit" loading={submitting} className="btn-primary btn-block btn-lg">
+          Sign in
+        </Button>
+      </form>
+    </AuthLayout>
   );
 }

@@ -50,7 +50,7 @@ export default function RequestHistory() {
 
         {results && results.length > 0 && (
           <div className="table-wrap">
-            <table className="table">
+            <table className="table stack">
               <thead>
                 <tr>
                   <th>Patient</th>
@@ -64,19 +64,19 @@ export default function RequestHistory() {
               <tbody>
                 {results.map((r) => (
                   <tr key={r._id}>
-                    <td>
+                    <td data-label="Patient">
                       <strong>{r.patientName}</strong>
                       {r.emergency && <span className="badge badge-emergency">Emergency</span>}
                     </td>
-                    <td>{r.age ?? "-"}</td>
-                    <td>
+                    <td data-label="Age">{r.age ?? "-"}</td>
+                    <td data-label="Blood group">
                       <GroupChip group={r.bloodGroup} />
                     </td>
-                    <td>{r.city}</td>
-                    <td>
+                    <td data-label="City">{r.city}</td>
+                    <td data-label="Status">
                       <StatusBadge status={r.status} />
                     </td>
-                    <td>{formatDate(r.createdAt)}</td>
+                    <td data-label="Date">{formatDate(r.createdAt)}</td>
                   </tr>
                 ))}
               </tbody>
